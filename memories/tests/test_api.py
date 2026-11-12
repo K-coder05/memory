@@ -94,3 +94,12 @@ def test_list_is_paginated_newest_first(alice, alice_gmail, make_memory, client_
     assert len(resp.data["results"]) == 20
     assert resp.data["next"] is not None
     assert resp.data["results"][0]["content"] == "day 25"
+
+def test_list_query_count_is_constant(alice, alice_gmail, alice_slack, make_memory, client_for,
+                                      django_assert_max_num_queries):
+    for i in range(30):
+        make_memory(alice, alice_gmail if i % 2 else alice_slack, content=f"m{i}")
+    client = client_for(alice)
+    with django_assert_max_num_queries(2):
+        resp = client.get("/memories")
+    assert resp.status_code == 200

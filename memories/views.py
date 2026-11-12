@@ -28,7 +28,7 @@ class MemoryViewSet(
 	serializer_class = MemorySerializer
 
 	def get_queryset(self):
-		qs = Memory.objects.filter(user=self.request.user)
+		qs = Memory.objects.filter(user=self.request.user).select_related("source")
 		if self.action == "list":
 			params = self.request.query_params
 			if source := params.get("source"):
