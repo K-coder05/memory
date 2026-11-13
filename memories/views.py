@@ -18,6 +18,16 @@ def parse_since(value):
 		dt = timezone.make_aware(dt)
 	return dt
 
+def parse_when(value, param):
+    try:
+        dt = parse_datetime(value)
+    except ValueError:
+        dt = None
+    if dt is None:
+        raise ValidationError({param: "Use ISO 8601, e.g. 2024-01-31 or 2024-01-31T09:00:00Z"})
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    return dt
 
 class MemoryViewSet(
 	mixins.CreateModelMixin,
@@ -34,7 +44,9 @@ class MemoryViewSet(
 			if source := params.get("source"):
 				qs = qs.filter(source__kind=source)
 			if since := params.get("since"):
-				qs = qs.filter(occurred_at__gte=parse_since(since))
+				qs = qs.filter(occurred_at__gte=parse_when(since, "since"))
+			if until := params.get("until"):
+				qs = qs.filter(occurred_at__lt=parse_when(until, "until"))
 			if q:= params.get("q"):
 				qs = qs.filter(content__icontains=q)
 		return qs

@@ -22,3 +22,10 @@ Benchmark user: user0. Times are warm runs from sql/bench.sql.
 | Q3 JSONB sender | Same plan + filter `metadata @>` (6 rows out of 356k), 158,789 buffers read, **586 ms** | | |
 | Q4a icontains common word | Same plan + filter `upper(content) LIKE` (~6.9k matches), 158,791 buffers read, **617 ms** | | |
 | Q4b icontains no match | Same plan + filter, 0 rows out, 158,790 buffers read, **585 ms** | | |
+
+Queries with the highest `total_ms`:
+ calls | total_ms | mean_ms | rows |                                                     query
+-------+----------+---------+------+----------------------------------------------------------------------------------------------------------------
+     2 |     1237 |   618.7 |    0 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem
+     2 |     1235 |   617.4 |   20 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem
+     1 |      618 |   618.0 |    0 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem

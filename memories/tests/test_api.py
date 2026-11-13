@@ -103,3 +103,9 @@ def test_list_query_count_is_constant(alice, alice_gmail, alice_slack, make_memo
     with django_assert_max_num_queries(2):
         resp = client.get("/memories")
     assert resp.status_code == 200
+
+def test_filter_until_is_exclusive(alice, alice_gmail, make_memory, client_for):
+    old = make_memory(alice, alice_gmail, content="old", when=utc(2023, 12, 31))
+    make_memory(alice, alice_gmail, content="new", when=utc(2024, 1, 1))
+    resp = client_for(alice).get("/memories", {"until": "2024-01-01"})
+    assert [m["id"] for m in resp.data["results"]] == [old.id]
