@@ -1,7 +1,18 @@
 services:
   db:
-    image: postgres:16
+    image: pgvector/pgvector:0.8.0-pg16
     env_file: .env
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - maintenance_work_mem=1GB
+    shm_size: 1g
     ports:
       - "5433:5432"
     volumes:
