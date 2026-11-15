@@ -52,6 +52,8 @@ class MemoryViewSet(
 				qs = qs.filter(occurred_at__gte=parse_when(since, "since"))
 			if until := params.get("until"):
 				qs = qs.filter(occurred_at__lt=parse_when(until, "until"))
+			if contains := params.get("contains"):
+				qs = qs.filter(content__icontains=contains)
 			if sender := params.get("sender"):
 				qs = qs.filter(metadata__contains={"from": sender})
 			if q:= params.get("q"):

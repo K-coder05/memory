@@ -121,3 +121,9 @@ def test_search_matches_other_word_forms(alice, alice_gmail, make_memory, client
     make_memory(alice, alice_gmail, content="Grocery list")
     resp = client_for(alice).get("/memories", {"q": "flight"})
     assert [m["id"] for m in resp.data["results"]] == [hit.id]
+
+def test_contains_matches_substrings(alice, alice_gmail, make_memory, client_for):
+    hit = make_memory(alice, alice_gmail, content="Invoice INV-2024-0042 attached")
+    make_memory(alice, alice_gmail, content="Grocery list")
+    resp = client_for(alice).get("/memories", {"contains": "inv-2024"})
+    assert [m["id"] for m in resp.data["results"]] == [hit.id]

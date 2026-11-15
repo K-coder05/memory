@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
-from django.contrib.postgres.indexes import GinIndex
+from django.db.models.functions import Upper
+from django.contrib.postgres.indexes import GinIndex, OpClass
 from django.contrib.postgres.search import SearchVector, SearchVectorField
 
 # Create your models here.
@@ -52,6 +53,7 @@ class Memory(models.Model):
 			models.Index(fields=["user", "-occurred_at", "-id"], name="memory_user_recent_idx"),
 			GinIndex(fields=["metadata"], opclasses=["jsonb_path_ops"], name="memory_metadata_gin"),
 			GinIndex(fields=["search_vector"], name="memory_search_gin"),
+			GinIndex(OpClass(Upper("content"), name="gin_trgm_ops"), name="memory_content_trgm"),
 		]
 
 	def __str__(self):

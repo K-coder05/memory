@@ -20,8 +20,8 @@ Benchmark user: user0. Times are warm runs from sql/bench.sql.
 | Q1 latest 20 | Parallel Bitmap Heap Scan on user_id index → Hash Join source → top-N sort; reads all 356k of the user's rows to return 20, 158,783 buffers read, **573 ms** | Index Scan on `memory_user_recent_idx`, no Sort, 20 rows read; **0.44 ms** | composite index `(user, -occurred_at, -id)` serves filter and order at once |
 | Q2 date range | Same plan + filter on occurred_at (removes 115k rows/worker), 158,785 buffers read, **505 ms** | Same index scan, stops after 20 rows; **0.45 ms** | same composite index; `occurred_at` range is an index condition |
 | Q3 JSONB sender | Same plan + filter `metadata @>` (6 rows out of 356k), 158,789 buffers read, **586 ms** | Bitmap Index Scan on `memory_metadata_gin` → Bitmap Heap Scan, 6 rows; **2.2 ms** | GIN `jsonb_path_ops` on `metadata` (65 MB) |
-| Q4a icontains common word | Same plan + filter `upper(content) LIKE` (~6.9k matches), 158,791 buffers read, **617 ms** | | |
-| Q4b icontains no match | Same plan + filter, 0 rows out, 158,790 buffers read, **585 ms** | | |
+| Q4a icontains common word | Same plan + filter `upper(content) LIKE` (~6.9k matches), 158,791 buffers read, **617 ms** | Bitmap Index Scan on `memory_content_trgm` (97k candidates) → Bitmap Heap Scan, 449k rows removed by recheck, 6.9k matches; **1,565 ms** | SLOWER than baseline: trigram index estimated 36 rows, actually 6,930; the bitmap path loses to the old plan for common words |
+| Q4b icontains no match | Same plan + filter, 0 rows out, 158,790 buffers read, **585 ms** | Bitmap Index Scan on `memory_content_trgm`, 0 candidates; **0.3 ms** | expression GIN `UPPER(content) gin_trgm_ops` (859 MB) |
 | Q5a full-text, common word | new query (compare Q4a: 617 ms) | Index Scan on `memory_user_recent_idx` with `search_vector @@` as filter, stops after 20 matches; **4.2 ms** | planner walks newest-first and finds 20 matches quickly, so it skips `memory_search_gin` |
 | Q5b full-text, no match | new query (compare Q4b: 585 ms) | Index Scan on `memory_user_recent_idx` with filter, 0 rows out, walks all of user0's rows; **1,400 ms** | did NOT use `memory_search_gin` (see below) |
 
@@ -40,3 +40,13 @@ Queries with the highest `total_ms`:
 - Table size 1.4 GB → **2,695 MB**. `memory_search_gin` is 180 MB.
 - Stored vector looks like `'accept':9 'arriv':14 'black':5 ...`: stemmed ("everybody" → "everybodi"), with positions, stop words removed.
 - Q5b did not use the GIN index, unlike the guide predicted. For a word that is absent from the table the planner estimates ~1,800 matching rows for user0, so walking `memory_user_recent_idx` newest-first and filtering looks cheaper than a bitmap, but with 0 real matches it reads the user's whole history (~1.4 s). The GIN index would answer "no row anywhere has this word" instantly, but the `user_id` filter is on the btree, so the planner has no cheap way to combine them. Compare Q4b (1.7 s) to Q5b: the tsvector filter is only a little cheaper than `UPPER(content) LIKE` per row.
+
+### 6d: trigram index for `?contains=`
+- `migrate` (extension + `CREATE INDEX ... USING gin ((UPPER("content")) gin_trgm_ops)`): **206 s**. `memory_content_trgm` is **859 MB**, bigger than every other index combined and ~1/3 of the table.
+- Q4b (no match): 585 ms baseline → **0.3 ms**. The index knows no trigram combination exists.
+- Q4a (common word, ~6.9k matches for user0) got **slower**, 617 ms → 1,565 ms. The index matches 97k rows across all users (trigram search ignores `user_id`), then the heap scan rechecks them, discarding 449k lossy-index candidates. The planner estimated 36 rows, so it picked the bitmap plan. A trigram index only pays off for rare substrings; for common ones a plain scan of the user's rows is cheaper.
+- Fuzzy search works: `UPPER('finacial') <% UPPER(content)` with `pg_trgm.word_similarity_threshold = 0.5` returns rows containing "financial". With `LIMIT 5` the planner used a Seq Scan and finished in 2.7 ms because matches are dense.
+
+### 6e: write cost of the indexes
+- Seed 20,000 memories: **946 rows/s** (21.1 s), vs **4,925 rows/s** in Checkpoint 1 with 3 indexes. Now 6 indexes (pkey, source_id, composite btree, metadata GIN, search GIN, trigram GIN) plus the stored `tsvector` computed per row. Caveat: the table is also 50x bigger now (5M vs 100k rows), so this isn't a pure index comparison.
+- Index sizes after `VACUUM ANALYZE`: trigram 865 MB, search GIN 184 MB, composite btree 193 MB, metadata GIN 68 MB (+ pkey and source_id btrees). Table 2,696 MB.
