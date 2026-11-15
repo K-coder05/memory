@@ -86,21 +86,26 @@ def test_search_is_case_insensitive(alice, alice_gmail, make_memory, client_for)
     assert [m["id"] for m in resp.data["results"]] == [hit.id]
 
 
-def test_list_is_paginated_newest_first(alice, alice_gmail, make_memory, client_for):
+def test_list_uses_cursor_pagination(alice, alice_gmail, make_memory, client_for):
     for day in range(1, 26):  # 25 memories, Jan 1..25
         make_memory(alice, alice_gmail, content=f"day {day}", when=utc(2024, 1, day))
-    resp = client_for(alice).get("/memories")
-    assert resp.data["count"] == 25
-    assert len(resp.data["results"]) == 20
-    assert resp.data["next"] is not None
-    assert resp.data["results"][0]["content"] == "day 25"
+    client = client_for(alice)
+
+    first = client.get("/memories").data
+    assert "count" not in first
+    assert [m["content"] for m in first["results"]][:2] == ["day 25", "day 24"]
+    assert len(first["results"]) == 20
+
+    second = client.get(first["next"]).data  # "next" is a full URL with ?cursor=...
+    assert [m["content"] for m in second["results"]] == [f"day {d}" for d in range(5, 0, -1)]
+    assert second["next"] is None
 
 def test_list_query_count_is_constant(alice, alice_gmail, alice_slack, make_memory, client_for,
                                       django_assert_max_num_queries):
     for i in range(30):
         make_memory(alice, alice_gmail if i % 2 else alice_slack, content=f"m{i}")
     client = client_for(alice)
-    with django_assert_max_num_queries(2):
+    with django_assert_max_num_queries(1):
         resp = client.get("/memories")
     assert resp.status_code == 200
 
@@ -127,3 +132,5 @@ def test_contains_matches_substrings(alice, alice_gmail, make_memory, client_for
     make_memory(alice, alice_gmail, content="Grocery list")
     resp = client_for(alice).get("/memories", {"contains": "inv-2024"})
     assert [m["id"] for m in resp.data["results"]] == [hit.id]
+
+

@@ -1,0 +1,29 @@
+﻿Pager usage is off.
+===== OFFSET 100000
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=3724.07..3724.82 rows=20 width=16) (actual time=25.705..25.710 rows=20 loops=1)
+   Buffers: shared hit=90652 read=503
+   ->  Index Only Scan using memory_user_recent_idx on memories_memory  (cost=0.43..13380.81 rows=359336 width=16) (actual time=0.829..23.077 rows=100020 loops=1)
+         Index Cond: (user_id = 1)
+         Heap Fetches: 0
+         Buffers: shared hit=90652 read=503
+ Planning:
+   Buffers: shared hit=138 read=13 dirtied=1
+ Planning Time: 4.761 ms
+ Execution Time: 25.731 ms
+(10 rows)
+
+===== KEYSET after (2026-01-11 14:55:50.951972+00, 1213588)
+                                                                          QUERY PLAN                                                                          
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.43..1.23 rows=20 width=16) (actual time=0.024..0.032 rows=20 loops=1)
+   Buffers: shared hit=21 read=1
+   ->  Index Only Scan using memory_user_recent_idx on memories_memory  (cost=0.43..10243.79 rows=257768 width=16) (actual time=0.023..0.030 rows=20 loops=1)
+         Index Cond: ((user_id = 1) AND (ROW(occurred_at, id) < ROW('2026-01-11 14:55:50.951972+00'::timestamp with time zone, 1213588)))
+         Heap Fetches: 0
+         Buffers: shared hit=21 read=1
+ Planning Time: 0.078 ms
+ Execution Time: 0.057 ms
+(8 rows)
+

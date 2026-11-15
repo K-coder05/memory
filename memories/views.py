@@ -6,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 
 from .models import Memory
 from .serializers import MemorySerializer
+from .pagination import MemoryCursorPagination
 
 
 def parse_since(value):
@@ -37,7 +38,8 @@ class MemoryViewSet(
 	viewsets.GenericViewSet,
 ):
 	serializer_class = MemorySerializer
-
+	pagination_class = MemoryCursorPagination
+	
 	def get_queryset(self):
 		qs = (
 			Memory.objects.filter(user=self.request.user)
