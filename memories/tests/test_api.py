@@ -115,3 +115,9 @@ def test_filter_by_sender(alice, alice_gmail, make_memory, client_for):
     make_memory(alice, alice_gmail, content="b", metadata={"from": "kim@example.com"})
     resp = client_for(alice).get("/memories", {"sender": "sam@example.com"})
     assert [m["id"] for m in resp.data["results"]] == [hit.id]
+
+def test_search_matches_other_word_forms(alice, alice_gmail, make_memory, client_for):
+    hit = make_memory(alice, alice_gmail, content="Booked two flights to Tokyo")
+    make_memory(alice, alice_gmail, content="Grocery list")
+    resp = client_for(alice).get("/memories", {"q": "flight"})
+    assert [m["id"] for m in resp.data["results"]] == [hit.id]

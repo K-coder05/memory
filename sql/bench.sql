@@ -49,3 +49,17 @@ SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name
   FROM memories_memory m JOIN memories_source s ON s.id = m.source_id
  WHERE m.user_id = :uid AND UPPER(m.content) LIKE UPPER('%' || :'missing' || '%')
  ORDER BY m.occurred_at DESC, m.id DESC LIMIT 20;
+
+\echo ===== Q5a: full-text search, common word
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name
+  FROM memories_memory m JOIN memories_source s ON s.id = m.source_id
+ WHERE m.user_id = :uid AND m.search_vector @@ websearch_to_tsquery('english', :'word')
+ ORDER BY m.occurred_at DESC, m.id DESC LIMIT 20;
+
+\echo ===== Q5b: full-text search, word that matches nothing
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name
+  FROM memories_memory m JOIN memories_source s ON s.id = m.source_id
+ WHERE m.user_id = :uid AND m.search_vector @@ websearch_to_tsquery('english', :'missing')
+ ORDER BY m.occurred_at DESC, m.id DESC LIMIT 20;

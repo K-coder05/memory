@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector, SearchVectorField
 
 # Create your models here.
 class Source(models.Model):
@@ -37,6 +38,11 @@ class Memory(models.Model):
 	content = models.TextField()
 	occurred_at = models.DateTimeField()
 	metadata = models.JSONField(default=dict, blank=True)
+	search_vector = models.GeneratedField(
+		expression=SearchVector("content", config="english"),
+		output_field=SearchVectorField(),
+		db_persist=True,  # STORED: computed on write, kept on disk
+	)
 	created_at = models.DateTimeField(auto_now_add=True)
 
 	class Meta:
@@ -45,6 +51,7 @@ class Memory(models.Model):
 		indexes = [
 			models.Index(fields=["user", "-occurred_at", "-id"], name="memory_user_recent_idx"),
 			GinIndex(fields=["metadata"], opclasses=["jsonb_path_ops"], name="memory_metadata_gin"),
+			GinIndex(fields=["search_vector"], name="memory_search_gin"),
 		]
 
 	def __str__(self):

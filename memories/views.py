@@ -1,3 +1,4 @@
+from django.contrib.postgres.search import SearchQuery
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import mixins, viewsets
@@ -38,7 +39,11 @@ class MemoryViewSet(
 	serializer_class = MemorySerializer
 
 	def get_queryset(self):
-		qs = Memory.objects.filter(user=self.request.user).select_related("source")
+		qs = (
+			Memory.objects.filter(user=self.request.user)
+			.select_related("source")
+			.defer("search_vector")
+		)
 		if self.action == "list":
 			params = self.request.query_params
 			if source := params.get("source"):
@@ -50,7 +55,7 @@ class MemoryViewSet(
 			if sender := params.get("sender"):
 				qs = qs.filter(metadata__contains={"from": sender})
 			if q:= params.get("q"):
-				qs = qs.filter(content__icontains=q)
+				qs = qs.filter(search_vector=SearchQuery(q, search_type="websearch", config="english"))
 		return qs
 
 	def perform_create(self, serializer):
