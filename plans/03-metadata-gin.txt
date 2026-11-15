@@ -1,0 +1,145 @@
+﻿Pager usage is off.
+user=1 email=martinaaron@example.com word=medical missing=zqxjvk
+
+===== Q1: latest 20 for a user
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.72..42.07 rows=20 width=251) (actual time=0.621..0.888 rows=20 loops=1)
+   Buffers: shared hit=9 read=23
+   ->  Nested Loop  (cost=0.72..754943.27 rows=365167 width=251) (actual time=0.620..0.885 rows=20 loops=1)
+         Buffers: shared hit=9 read=23
+         ->  Index Scan using memory_user_recent_idx on memories_memory m  (cost=0.43..745647.37 rows=365167 width=244) (actual time=0.599..0.851 rows=20 loops=1)
+               Index Cond: (user_id = 1)
+               Buffers: shared read=23
+         ->  Memoize  (cost=0.29..0.30 rows=1 width=23) (actual time=0.001..0.001 rows=1 loops=20)
+               Cache Key: m.source_id
+               Cache Mode: logical
+               Hits: 17  Misses: 3  Evictions: 0  Overflows: 0  Memory Usage: 1kB
+               Buffers: shared hit=9
+               ->  Index Scan using memories_source_pkey on memories_source s  (cost=0.28..0.29 rows=1 width=23) (actual time=0.005..0.005 rows=1 loops=3)
+                     Index Cond: (id = m.source_id)
+                     Buffers: shared hit=9
+ Planning:
+   Buffers: shared hit=109 read=15
+ Planning Time: 4.882 ms
+ Execution Time: 0.963 ms
+(19 rows)
+
+===== Q2: date range (January 2026)
+                                                                                        QUERY PLAN                                                                                        
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.72..80.19 rows=20 width=251) (actual time=0.656..0.978 rows=20 loops=1)
+   Buffers: shared hit=10 read=22
+   ->  Nested Loop  (cost=0.72..40640.07 rows=10227 width=251) (actual time=0.656..0.976 rows=20 loops=1)
+         Buffers: shared hit=10 read=22
+         ->  Index Scan using memory_user_recent_idx on memories_memory m  (cost=0.43..40206.55 rows=10227 width=244) (actual time=0.647..0.952 rows=20 loops=1)
+               Index Cond: ((user_id = 1) AND (occurred_at >= '2026-01-01 00:00:00+00'::timestamp with time zone) AND (occurred_at < '2026-02-01 00:00:00+00'::timestamp with time zone))
+               Buffers: shared hit=1 read=22
+         ->  Memoize  (cost=0.29..0.31 rows=1 width=23) (actual time=0.001..0.001 rows=1 loops=20)
+               Cache Key: m.source_id
+               Cache Mode: logical
+               Hits: 17  Misses: 3  Evictions: 0  Overflows: 0  Memory Usage: 1kB
+               Buffers: shared hit=9
+               ->  Index Scan using memories_source_pkey on memories_source s  (cost=0.28..0.30 rows=1 width=23) (actual time=0.002..0.002 rows=1 loops=3)
+                     Index Cond: (id = m.source_id)
+                     Buffers: shared hit=9
+ Planning:
+   Buffers: shared hit=22
+ Planning Time: 0.192 ms
+ Execution Time: 0.998 ms
+(19 rows)
+
+===== Q3: JSONB filter (emails from one sender)
+                                                                    QUERY PLAN                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1974.91..1974.96 rows=20 width=251) (actual time=2.123..2.128 rows=6 loops=1)
+   Buffers: shared hit=13 read=85
+   ->  Sort  (cost=1974.91..1975.00 rows=37 width=251) (actual time=2.123..2.126 rows=6 loops=1)
+         Sort Key: m.occurred_at DESC, m.id DESC
+         Sort Method: quicksort  Memory: 28kB
+         Buffers: shared hit=13 read=85
+         ->  Hash Join  (cost=43.35..1973.94 rows=37 width=251) (actual time=0.771..2.083 rows=6 loops=1)
+               Hash Cond: (m.source_id = s.id)
+               Buffers: shared hit=7 read=85
+               ->  Bitmap Heap Scan on memories_memory m  (cost=23.85..1954.35 rows=37 width=244) (actual time=0.099..1.405 rows=6 loops=1)
+                     Recheck Cond: (metadata @> jsonb_build_object('from', 'martinaaron@example.com'))
+                     Filter: (user_id = 1)
+                     Rows Removed by Filter: 76
+                     Heap Blocks: exact=82
+                     Buffers: shared hit=5 read=81
+                     ->  Bitmap Index Scan on memory_metadata_gin  (cost=0.00..23.84 rows=500 width=0) (actual time=0.080..0.081 rows=82 loops=1)
+                           Index Cond: (metadata @> jsonb_build_object('from', 'martinaaron@example.com'))
+                           Buffers: shared hit=4
+               ->  Hash  (cost=12.00..12.00 rows=600 width=23) (actual time=0.654..0.655 rows=600 loops=1)
+                     Buckets: 1024  Batches: 1  Memory Usage: 44kB
+                     Buffers: shared hit=2 read=4
+                     ->  Seq Scan on memories_source s  (cost=0.00..12.00 rows=600 width=23) (actual time=0.004..0.510 rows=600 loops=1)
+                           Buffers: shared hit=2 read=4
+ Planning:
+   Buffers: shared hit=21
+ Planning Time: 0.207 ms
+ Execution Time: 2.174 ms
+(27 rows)
+
+===== Q4a: keyword search, common word (icontains)
+                                                                       QUERY PLAN                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=221201.19..221203.52 rows=20 width=251) (actual time=759.522..790.800 rows=20 loops=1)
+   Buffers: shared hit=360 read=183569
+   ->  Gather Merge  (cost=221201.19..221204.69 rows=30 width=251) (actual time=710.694..741.968 rows=20 loops=1)
+         Workers Planned: 2
+         Workers Launched: 2
+         Buffers: shared hit=360 read=183569
+         ->  Sort  (cost=220201.17..220201.20 rows=15 width=251) (actual time=687.034..687.039 rows=16 loops=3)
+               Sort Key: m.occurred_at DESC, m.id DESC
+               Sort Method: top-N heapsort  Memory: 40kB
+               Buffers: shared hit=360 read=183569
+               Worker 0:  Sort Method: top-N heapsort  Memory: 40kB
+               Worker 1:  Sort Method: top-N heapsort  Memory: 40kB
+               ->  Hash Join  (cost=19.50..220200.87 rows=15 width=251) (actual time=8.618..684.521 rows=2310 loops=3)
+                     Hash Cond: (m.source_id = s.id)
+                     Buffers: shared hit=232 read=183569
+                     ->  Parallel Seq Scan on memories_memory m  (cost=0.00..220181.33 rows=15 width=244) (actual time=8.254..681.619 rows=2310 loops=3)
+                           Filter: ((user_id = 1) AND (upper(content) ~~ '%MEDICAL%'::text))
+                           Rows Removed by Filter: 1664357
+                           Buffers: shared hit=154 read=183569
+                     ->  Hash  (cost=12.00..12.00 rows=600 width=23) (actual time=0.234..0.234 rows=600 loops=3)
+                           Buckets: 1024  Batches: 1  Memory Usage: 44kB
+                           Buffers: shared hit=18
+                           ->  Seq Scan on memories_source s  (cost=0.00..12.00 rows=600 width=23) (actual time=0.048..0.121 rows=600 loops=3)
+                                 Buffers: shared hit=18
+ Planning:
+   Buffers: shared hit=14
+ Planning Time: 0.232 ms
+ JIT:
+   Functions: 40
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 3.903 ms, Inlining 0.000 ms, Optimization 6.948 ms, Emission 64.686 ms, Total 75.537 ms
+ Execution Time: 1025.563 ms
+(32 rows)
+
+===== Q4b: keyword search, word that matches nothing (icontains)
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.43..127955.86 rows=20 width=251) (actual time=2873.557..2873.559 rows=0 loops=1)
+   Buffers: shared hit=104841 read=253411 written=8004
+   ->  Nested Loop  (cost=0.43..748539.70 rows=117 width=251) (actual time=2863.543..2863.545 rows=0 loops=1)
+         Join Filter: (m.source_id = s.id)
+         Buffers: shared hit=104841 read=253411 written=8004
+         ->  Index Scan using memory_user_recent_idx on memories_memory m  (cost=0.43..747473.20 rows=117 width=244) (actual time=2863.521..2863.521 rows=0 loops=1)
+               Index Cond: (user_id = 1)
+               Filter: (upper(content) ~~ '%ZQXJVK%'::text)
+               Rows Removed by Filter: 356496
+               Buffers: shared hit=104841 read=253411 written=8004
+         ->  Materialize  (cost=0.00..15.00 rows=600 width=23) (never executed)
+               ->  Seq Scan on memories_source s  (cost=0.00..12.00 rows=600 width=23) (never executed)
+ Planning:
+   Buffers: shared hit=14
+ Planning Time: 0.413 ms
+ JIT:
+   Functions: 13
+   Options: Inlining false, Optimization false, Expressions true, Deforming true
+   Timing: Generation 0.576 ms, Inlining 0.000 ms, Optimization 0.402 ms, Emission 9.611 ms, Total 10.589 ms
+ Execution Time: 2874.346 ms
+(20 rows)
+

@@ -109,3 +109,9 @@ def test_filter_until_is_exclusive(alice, alice_gmail, make_memory, client_for):
     make_memory(alice, alice_gmail, content="new", when=utc(2024, 1, 1))
     resp = client_for(alice).get("/memories", {"until": "2024-01-01"})
     assert [m["id"] for m in resp.data["results"]] == [old.id]
+
+def test_filter_by_sender(alice, alice_gmail, make_memory, client_for):
+    hit = make_memory(alice, alice_gmail, content="a", metadata={"from": "sam@example.com"})
+    make_memory(alice, alice_gmail, content="b", metadata={"from": "kim@example.com"})
+    resp = client_for(alice).get("/memories", {"sender": "sam@example.com"})
+    assert [m["id"] for m in resp.data["results"]] == [hit.id]

@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.contrib.postgres.indexes import GinIndex
 
 # Create your models here.
 class Source(models.Model):
@@ -43,6 +44,7 @@ class Memory(models.Model):
 		verbose_name_plural = "memories"
 		indexes = [
 			models.Index(fields=["user", "-occurred_at", "-id"], name="memory_user_recent_idx"),
+			GinIndex(fields=["metadata"], opclasses=["jsonb_path_ops"], name="memory_metadata_gin"),
 		]
 
 	def __str__(self):

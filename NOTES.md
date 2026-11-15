@@ -17,9 +17,9 @@ Benchmark user: user0. Times are warm runs from sql/bench.sql.
 
 | Query | Before: plan, time | After: plan, time | What changed |
 |---|---|---|---|
-| Q1 latest 20 | Parallel Bitmap Heap Scan on user_id index → Hash Join source → top-N sort; reads all 356k of the user's rows to return 20, 158,783 buffers read, **573 ms** | | |
-| Q2 date range | Same plan + filter on occurred_at (removes 115k rows/worker), 158,785 buffers read, **505 ms** | | |
-| Q3 JSONB sender | Same plan + filter `metadata @>` (6 rows out of 356k), 158,789 buffers read, **586 ms** | | |
+| Q1 latest 20 | Parallel Bitmap Heap Scan on user_id index → Hash Join source → top-N sort; reads all 356k of the user's rows to return 20, 158,783 buffers read, **573 ms** | Index Scan on `memory_user_recent_idx`, no Sort, 20 rows read; **0.44 ms** | composite index `(user, -occurred_at, -id)` serves filter and order at once |
+| Q2 date range | Same plan + filter on occurred_at (removes 115k rows/worker), 158,785 buffers read, **505 ms** | Same index scan, stops after 20 rows; **0.45 ms** | same composite index; `occurred_at` range is an index condition |
+| Q3 JSONB sender | Same plan + filter `metadata @>` (6 rows out of 356k), 158,789 buffers read, **586 ms** | Bitmap Index Scan on `memory_metadata_gin` → Bitmap Heap Scan, 6 rows; **2.2 ms** | GIN `jsonb_path_ops` on `metadata` (65 MB) |
 | Q4a icontains common word | Same plan + filter `upper(content) LIKE` (~6.9k matches), 158,791 buffers read, **617 ms** | | |
 | Q4b icontains no match | Same plan + filter, 0 rows out, 158,790 buffers read, **585 ms** | | |
 
@@ -29,3 +29,6 @@ Queries with the highest `total_ms`:
      2 |     1237 |   618.7 |    0 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem
      2 |     1235 |   617.4 |   20 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem
      1 |      618 |   618.0 |    0 | EXPLAIN (ANALYZE, BUFFERS) SELECT m.id, m.content, m.occurred_at, m.metadata, s.kind, s.name FROM memories_mem
+
+### 6b: GIN selectivity experiment
+`metadata @> '{"labels": ["travel"]}'` for user0 with `LIMIT 20` does a Seq Scan and stops after 20 matches (2.3 ms), ignoring the GIN index. About a quarter of rows match, so scanning until 20 are found is cheaper than building and intersecting a bitmap of tens of thousands of rows. An index is only worth using when the predicate is selective.
