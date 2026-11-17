@@ -65,3 +65,22 @@ Reset stats, then `.\scripts\load.ps1 -Rounds 10` (50 requests as user0, same tr
 - No `SELECT COUNT(*)` appears any more: cursor pagination needs no count. The listing and `?since=` queries are ~1 ms each, so the composite index plus cursor pagination removed them from the top of the list.
 - `?page=5000` in `load.ps1` is ignored by `CursorPagination` and just returns the first page, so that request is now a copy of `/memories`.
 - Compared with the earlier "highest total_ms" table (taken from `bench.sql` EXPLAINs, ~620 ms each, not from API traffic), the list/date queries went from ~600 ms to ~1 ms. Only search is left worth optimizing, and mostly for the rare/no-match term (a per-user GIN via `btree_gin`, or a `(user_id, search_vector)` strategy, would be the next experiment).
+
+
+## Checkpoint 2, part 9: pgvector vs Pinecone
+
+### 9a: Pinecone baseline (measured, not remembered)
+Setup of the RAG project (`Projects/rag`, Paul Graham essays + YC Startup Library):
+- Embedding model `gemini-embedding-001`, **3072 dimensions**, cosine. Queries use task type RETRIEVAL_QUERY, chunks were embedded as documents.
+- Pinecone serverless (aws us-east-1), index `startup-library`, namespace `startup-library`: **10,704 chunks** (chunk size 1000, overlap 200).
+- Eval set: 18 hand-written questions, of which **14 have an expected source** (4 are out-of-scope and have none, so they can't be a "hit"). With 14 questions, one question is 7 percentage points. Treat all hit rates here as rough.
+- A **hit** = one of the top-5 returned chunks comes from one of the question's `expected_sources` URLs (the eval set has no chunk ids, so the comparison is by source document).
+- Exported with `eval/export_pinecone.py` (chunk text, source URL and the stored Pinecone vectors) so Postgres is tested on the **identical vectors**; `eval/pinecone_baseline.py` produced the numbers (3 timed runs per query, 1 warm-up, from my Windows machine over the internet):
+
+| mode | hit@5 | p50 | p95 | what the latency includes |
+|---|---|---|---|---|
+| Pinecone dense | 13/14 (93%) | 93 ms | 206 ms | the `index.query` call only: network round trip + search |
+| Pinecone dense + BM25 (RRF), as in `main.py` | 14/14 (100%) | 148 ms | 179 ms | the Pinecone call plus BM25 scoring of all 10,704 chunks in Python |
+| query embedding (Gemini API) | n/a | 205 ms | 245 ms | one `embed_query` call, same for any vector store |
+
+End to end (embedding + retrieval) the Pinecone dense path is about 300 ms at p50, which matches the "<300 ms" I remembered only if the embedding is included.
