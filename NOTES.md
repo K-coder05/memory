@@ -83,7 +83,7 @@ Setup of the RAG project (`Projects/rag`, Paul Graham essays + YC Startup Librar
 | Pinecone dense + BM25 (RRF), as in `main.py` | 14/14 (100%) | 148 ms | 179 ms | the Pinecone call plus BM25 scoring of all 10,704 chunks in Python |
 | query embedding (Gemini API) | n/a | 205 ms | 245 ms | one `embed_query` call, same for any vector store |
 
-End to end (embedding + retrieval) the Pinecone dense path is about 300 ms at p50, which matches the "<300 ms" I remembered only if the embedding is included.
+End to end (embedding + retrieval) the Pinecone dense path is about 300 ms at p50 (205 + 93). The query embedding is about two thirds of that.
 
 ### 9c–9f: loading the data and building the HNSW index
 - **Vector type:** `gemini-embedding-001` gives 3072 numbers, and pgvector's `vector` type can only be indexed up to 2000 dimensions. I used `halfvec(3072)` (16-bit floats, indexable up to 4000). Cost: the stored vectors are rounded from the float32 ones Pinecone holds, 6 KB per vector instead of 12 KB.
@@ -153,3 +153,29 @@ What this shows:
 - Hybrid hides part of it: in the eval runs it always returned 5.0 results even when the vector list was short, because the keyword list filled the gap. I did not run hybrid on the off-topic queries. If the vector list is empty, the "semantic" half of the hybrid is silently missing.
 - Other fixes, which I did not try: a **partial HNSW index per tenant** (`WHERE user_id = X`; works for a few big tenants, not for 200 small ones); **partitioning** the table by tenant so each partition has its own index; an **exact scan for small tenants** (what the planner chose here by default: 50 ms for 10k rows, linear in tenant size). Pinecone's equivalent is namespaces or metadata filters.
 - The planner's default plan for this tenant is the exact scan, so the default behaviour of the code in `memories/search.py` never hit the problem on `rag_eval`. It would for a much bigger table or once statistics change, so `iterative_scan = relaxed_order` is the safe setting to ship with.
+
+
+### 9j: Pinecone vs pgvector, on my numbers
+Same 10,704 chunks, same 3072-d Gemini vectors (copied out of Pinecone; stored as `halfvec`), same 14 questions, hit = right source document in the top 5. Latencies are medians measured from my Windows laptop; Pinecone's include the internet round trip to us-east-1, pgvector's go to Postgres in a local Docker container, so the latency comparison favours pgvector by design.
+
+| | Pinecone (serverless) | pgvector (HNSW, `halfvec`) |
+|---|---|---|
+| top-5 hit rate, dense only | 13/14 (93%) | 13/14 (93%) |
+| top-5 hit rate, dense + keyword (RRF) | 14/14 (100%), BM25 in Python | 13/14 (93%) at 50 candidates, 14/14 at 5 candidates, keyword from Postgres full-text |
+| vector search p50 / p95 | 93 / 206 ms (network included) | 5.3 / 8.4 ms with the HNSW index (local, no network); 50 / 111 ms with the exact scan the planner picks by default |
+| hybrid p50 / p95 | 148 / 179 ms | 86-191 / 156-366 ms, mostly the keyword half (~130 ms) |
+| query embedding (same for both) | 205 / 245 ms | 209 / 227 ms |
+| index build | not measured (was built once by `injection_script.py`) | 40.6 s for 60,704 vectors (includes scanning the 5M-row table) |
+| index size | not measured | 473 MB for 60,704 vectors (~7.8 KB each); the vectors themselves add 474 MB of TOAST |
+
+The question set is tiny: one question is 7 percentage points, so the table says "no measurable quality difference", not "pgvector is better or worse".
+
+**1. Ops cost.** pgvector adds nothing to run: the vectors live in the Postgres I already back up, secure and monitor, and a restore brings the vectors back. Pinecone is a second service with its own API key, bill and outage modes, and the data has to be re-exported or re-embedded to move it. I did not look up Pinecone's pricing, so I can't say which is cheaper in money. What HNSW cost in resources: 473 MB of index for 60,704 vectors plus 474 MB of vector storage, about 15 MB per 1,000 vectors in total, and it should be in RAM to be fast. `halfvec` halves the storage versus float32 at the price of rounding (it didn't change the hit rate here). The query embedding is a Gemini API call either way (about 210 ms, two thirds of the end-to-end latency), so replacing Pinecone doesn't remove the external dependency.
+
+**2. Filtering by tenant.** 9i showed the danger: HNSW returns its nearest ~`ef_search` vectors from the whole index and Postgres filters by `user_id` afterwards, so a tenant with 17.6% of the index got **0 results** (no error) for queries unlike its own data at the default settings, and the eval questions lost one or two hits at low `ef_search`. `hnsw.iterative_scan = relaxed_order` fixed it completely for ~20 ms extra, only on the queries that needed it. Pinecone avoids this with namespaces or metadata filters that are applied inside the search. For Recall (many small tenants, one table) I would ship with `iterative_scan = relaxed_order` and add partitioning by tenant group only if tenants grew large. A per-tenant partial index doesn't work with hundreds or thousands of tenants. I'd also fix the planner's row estimate, since it currently picks an exact scan for a tenant this size, and that scan gets slower in proportion to the tenant's size.
+
+**3. Joins with relational data.** The hybrid search is one SQL query: it can also filter by `source`, `occurred_at` or `metadata`, it respects the same `user_id` scoping as the API, and it reads the row it returns in the same snapshot, so a deleted memory never comes back from a stale index. The Pinecone version is: query Pinecone, get ids, fetch the rows from Postgres, and keep two stores in sync on every write and delete (the RAG project doesn't need that because the corpus is static). The cost is that the SQL is mine to write and keep correct: raw SQL bypasses the viewset's scoping, so the tests in `test_search.py` lock `user_id` filtering in for all three search functions. Note too that combining a metadata filter with the HNSW index has the same "filter after the graph search" problem as the tenant filter.
+
+**4. Scale limits.** HNSW wants its graph in memory, and the size grows linearly: ~7.8 KB per 3072-d `halfvec` entry means roughly 8 GB at 1 million vectors and 39 GB at 5 million, on top of the table itself. That's the point where one Postgres instance needs a bigger box or gets slow on builds and cache misses. Options: more RAM; partition by tenant; shrink the vectors (Gemini embeddings can be truncated to 768 or 1,536 dimensions, which cuts storage 2-4x but means re-embedding and re-measuring the quality; binary quantization shrinks further); or move to a dedicated vector database when vector search becomes the main workload rather than a feature. At today's size (10,704 chunks, or 60,704 with the distractors) none of this matters: the whole index is under 0.5 GB.
+
+**When I'd choose each:** pgvector when the vectors belong to rows I already have in Postgres, need joins and transactional consistency, and the volume is up to some millions of vectors; Pinecone when vector search is the whole product, the data is large, or I don't want to operate and tune an index. For this RAG project (static corpus of 10k chunks, no relational data) both work equally well, and the deciding factor would be "one less service".
