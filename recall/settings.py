@@ -153,3 +153,9 @@ LOGGING = {
 		}
 	}
 }
+
+# Must be the same model (and dimension) the RAG project stored in Pinecone, so the
+# comparison measures the vector store and nothing else. If you change the model,
+# change EMBEDDING_DIM in memories/models.py and make a new migration.
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "gemini-embedding-001")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
