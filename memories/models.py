@@ -3,6 +3,12 @@ from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.postgres.indexes import GinIndex, OpClass
 from django.contrib.postgres.search import SearchVector, SearchVectorField
+from pgvector.django import HalfVectorField
+
+# gemini-embedding-001 (the model the RAG project's Pinecone index uses) gives 3072 numbers.
+# pgvector's plain `vector` type can only be indexed up to 2000 dimensions; `halfvec`
+# (16-bit floats, half the storage) can be indexed up to 4000.
+EMBEDDING_DIM = 3072
 
 # Create your models here.
 class Source(models.Model):
@@ -10,6 +16,7 @@ class Source(models.Model):
         GMAIL = "gmail", "Gmail",
         SLACK = "slack", "Slack",
         ZOOM = "zoom", "Zoom"
+        DOCS = "docs", "Documents"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sources"
@@ -44,6 +51,7 @@ class Memory(models.Model):
 		output_field=SearchVectorField(),
 		db_persist=True,  # STORED: computed on write, kept on disk
 	)
+	embedding = HalfVectorField(dimensions=EMBEDDING_DIM, null=True, blank=True)
 	created_at = models.DateTimeField(auto_now_add=True)
 
 	class Meta:

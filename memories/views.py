@@ -44,7 +44,7 @@ class MemoryViewSet(
 		qs = (
 			Memory.objects.filter(user=self.request.user)
 			.select_related("source")
-			.defer("search_vector")
+			.defer("search_vector", "embedding")
 		)
 		if self.action == "list":
 			params = self.request.query_params
