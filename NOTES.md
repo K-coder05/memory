@@ -84,3 +84,10 @@ Setup of the RAG project (`Projects/rag`, Paul Graham essays + YC Startup Librar
 | query embedding (Gemini API) | n/a | 205 ms | 245 ms | one `embed_query` call, same for any vector store |
 
 End to end (embedding + retrieval) the Pinecone dense path is about 300 ms at p50, which matches the "<300 ms" I remembered only if the embedding is included.
+
+### 9c–9f: loading the data and building the HNSW index
+- **Vector type:** `gemini-embedding-001` gives 3072 numbers, and pgvector's `vector` type can only be indexed up to 2000 dimensions. I used `halfvec(3072)` (16-bit floats, indexable up to 4000). Cost: the stored vectors are rounded from the float32 ones Pinecone holds, 6 KB per vector instead of 12 KB.
+- **9c** `ADD COLUMN embedding halfvec(3072) NULL` on 5M rows: whole `migrate` (extension + column) took **1.9 s**. A nullable column without a default only changes the table definition (compare the 186 s generated column in 6c).
+- **9e** `load_corpus`: 10,704 chunks with their **existing Pinecone vectors** in **43 s**, no API calls. `embed_memories`: 50,000 fake memories embedded through the Gemini API in about **24 min** (100 texts per request, 1 s delay between requests). After that, 60,704 of 5,030,704 rows have an embedding: `rag_eval` has 10,704 (**17.6% of the index**), and the rest are spread over 199 other users at ~5k each.
+- **9f** `CREATE INDEX ... USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)` built in **40.6 s**, index size **473 MB** for 60,704 vectors, about 7.8 KB per vector (more than the 6 KB vector itself, because of the graph links). The 4.97M NULL rows aren't in the index, but the build still had to read the whole 3 GB table.
+- Table (with TOAST) 2,696 MB → 3,207 MB. Of that, 474 MB is TOAST: the 6 KB vectors don't fit in the 8 KB page with the rest of the row, so Postgres stores them out of line.

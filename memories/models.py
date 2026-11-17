@@ -3,7 +3,7 @@ from django.db import models
 from django.db.models.functions import Upper
 from django.contrib.postgres.indexes import GinIndex, OpClass
 from django.contrib.postgres.search import SearchVector, SearchVectorField
-from pgvector.django import HalfVectorField
+from pgvector.django import HalfVectorField, HnswIndex
 
 # gemini-embedding-001 (the model the RAG project's Pinecone index uses) gives 3072 numbers.
 # pgvector's plain `vector` type can only be indexed up to 2000 dimensions; `halfvec`
@@ -62,6 +62,13 @@ class Memory(models.Model):
 			GinIndex(fields=["metadata"], opclasses=["jsonb_path_ops"], name="memory_metadata_gin"),
 			GinIndex(fields=["search_vector"], name="memory_search_gin"),
 			GinIndex(OpClass(Upper("content"), name="gin_trgm_ops"), name="memory_content_trgm"),
+			HnswIndex(
+				name="memory_embedding_hnsw",
+				fields=["embedding"],
+				m=16,
+				ef_construction=64,
+				opclasses=["halfvec_cosine_ops"],
+			),
 		]
 
 	def __str__(self):
