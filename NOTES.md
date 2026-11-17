@@ -91,3 +91,33 @@ End to end (embedding + retrieval) the Pinecone dense path is about 300 ms at p5
 - **9e** `load_corpus`: 10,704 chunks with their **existing Pinecone vectors** in **43 s**, no API calls. `embed_memories`: 50,000 fake memories embedded through the Gemini API in about **24 min** (100 texts per request, 1 s delay between requests). After that, 60,704 of 5,030,704 rows have an embedding: `rag_eval` has 10,704 (**17.6% of the index**), and the rest are spread over 199 other users at ~5k each.
 - **9f** `CREATE INDEX ... USING hnsw (embedding halfvec_cosine_ops) WITH (m = 16, ef_construction = 64)` built in **40.6 s**, index size **473 MB** for 60,704 vectors, about 7.8 KB per vector (more than the 6 KB vector itself, because of the graph links). The 4.97M NULL rows aren't in the index, but the build still had to read the whole 3 GB table.
 - Table (with TOAST) 2,696 MB → 3,207 MB. Of that, 474 MB is TOAST: the 6 KB vectors don't fit in the 8 KB page with the rest of the row, so Postgres stores them out of line.
+
+### 9g: why the hybrid test passes (RRF by hand)
+Query "budget" with vector `unit(0)`, k = 60. Vector list: `both` (distance 0) and `vector_only` (distance 0) tie for rank 1, `keyword_only` (distance 1) is rank 3. Keyword list: `both` and `keyword_only` match (equal `ts_rank_cd`, rank 1 each); `vector_only` has no match.
+- `both` = 1/61 + 1/61 = **0.03279**
+- `keyword_only` = 1/63 + 1/61 = 0.03226
+- `vector_only` = 1/61 + 0 = 0.01639
+
+A document found by both lists wins because it collects two terms. The margin over `keyword_only` is tiny (1/61 vs 1/63 for the vector term), so "found by both" is a strong signal but not an overwhelming one.
+
+I changed the guide's SQL in one place: the nearest-neighbour query is a subquery with its own `ORDER BY distance LIMIT n`, and `RANK()` is applied outside it. With the window function next to `LIMIT` in the same query, Postgres can't stop after n rows, so it can't use the HNSW index to produce the ordered rows.
+
+### 9h: three ways, same 14 questions, same 10,704 chunks (`eval_search`, k = 5, 3 timed runs per query)
+`rag_eval` is 17.6% of the 60,704 indexed vectors. "db" times cover only the SQL (not the query embedding, ~210 ms p50 / 227 ms p95 from the Gemini API; Pinecone's baseline run measured 205 ms / 245 ms for the same call).
+
+| mode | hit@5 | db p50 | db p95 | notes |
+|---|---|---|---|---|
+| Pinecone dense | 13/14 | 93 ms | 206 ms | baseline from 9a |
+| Pinecone dense + BM25 (RRF) | 14/14 | 148 ms | 179 ms | baseline from 9a (the RAG project's own pipeline) |
+| pgvector vector, **planner's default plan** | 13/14 | 50 ms | 111 ms | exact scan: `user_id` bitmap, then sort 10,704 rows by distance |
+| pgvector vector, **HNSW forced** | 13/14 | **5.3 ms** | 8.4 ms | `enable_bitmapscan = off`, `ef_search = 100` |
+| pgvector keyword only (OR query, `ts_rank_cd`) | 10/14 (71%) | 130 ms | 295–324 ms | misses e1, e5, t1, t2 |
+| pgvector hybrid (RRF), 50 candidates per list | 13/14 | 191 ms default / 116 ms forced | 366 / 186 ms | |
+| pgvector hybrid, 5 candidates per list | 14/14 | 86 ms (forced) | 156 ms | |
+
+What I take from it:
+- **Quality is the same as Pinecone's, within what 14 questions can show.** Dense retrieval gets 13/14 on both stores (e6 is missed by both). One question is 7 points, so differences of one question are noise. The hybrid result moved between 13/14 and 14/14 depending on `candidates` (5 vs 10 vs 50) and on exact vs HNSW vector results, which is also noise-sized. The honest summary is "hybrid 13–14/14 vs Pinecone dense+BM25 14/14".
+- **Keyword search alone is the weakest (71%)**: it misses e1, e5, t1 and t2, all of which vector search finds. Vector search misses only e6, which keyword search finds, and hybrid recovers e6. So the two lists really are complementary, but with 50 candidates the noisier keyword list also pushed t1 out of the top 5 once. Natural-language questions are what embeddings are good at; keyword search adds value for exact names and terms, which this question set has few of.
+- **The vector part is fast** (5 ms with the index) but the **keyword part isn't** (~130 ms): the GIN index covers all 5M rows and all users and the `user_id` filter is applied afterwards, the same problem as Q5b in 6c. The hybrid latency is mostly the keyword half.
+- **End to end** (p50, query embedding + database): pgvector vector ≈ 210 + 5 = ~215 ms; pgvector hybrid ≈ 210 + 86–190 = ~300–400 ms; Pinecone dense ≈ 205 + 93 = ~300 ms; Pinecone dense+BM25 ≈ 205 + 148 = ~350 ms. The embedding call is the biggest single cost on every path, and it's identical for all of them.
+- **Planner surprise:** for `rag_eval` (10,704 of 5M rows) Postgres estimates ~171 matching rows (it assumes the 1.2% of rows that have embeddings are spread evenly over users), so it picks the exact scan and ignores the HNSW index. Exact scan costs 50 ms warm and 141–805 ms cold. For a tenant this size the exact scan is acceptable, but it grows linearly with the tenant. Fixes: extended statistics on `(user_id, embedding IS NOT NULL)`, or a partial index `WHERE embedding IS NOT NULL` on the btree so the estimate is right. I haven't tried either.
