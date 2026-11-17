@@ -50,3 +50,18 @@ Queries with the highest `total_ms`:
 ### 6e: write cost of the indexes
 - Seed 20,000 memories: **946 rows/s** (21.1 s), vs **4,925 rows/s** in Checkpoint 1 with 3 indexes. Now 6 indexes (pkey, source_id, composite btree, metadata GIN, search GIN, trigram GIN) plus the stored `tsvector` computed per row. Caveat: the table is also 50x bigger now (5M vs 100k rows), so this isn't a pure index comparison.
 - Index sizes after `VACUUM ANALYZE`: trigram 865 MB, search GIN 184 MB, composite btree 193 MB, metadata GIN 68 MB (+ pkey and source_id btrees). Table 2,696 MB.
+
+
+### 8: pg_stat_statements (after)
+Reset stats, then `.\scripts\load.ps1 -Rounds 10` (50 requests as user0, same traffic mix as before). Top 3 by total time:
+
+| calls | total_ms | mean_ms | rows | query |
+|---|---|---|---|---|
+| 20 | 95,924 | 4,796.2 | 210 | `search_vector @@ websearch_to_tsquery(...)` ORDER BY occurred_at DESC LIMIT |
+| 20 | 19 | 1.0 | 420 | `WHERE user_id = $1` ORDER BY ... LIMIT (`/memories` and `?page=5000`, which is now the same request) |
+| 10 | 3 | 0.3 | 210 | `WHERE user_id = $1 AND occurred_at >= $2` ORDER BY ... LIMIT (`?since=`) |
+
+- The full-text search is now essentially the whole bill: ~96 s of ~96 s total. `?q=meeting` and `?q=zqxjvk` normalize into the same row, so the 4.8 s mean is the average of fast calls (matches are dense, the scan stops after 20) and slow ones. The slow ones are the no-match term, which walks all of user0's rows newest-first (see Q5b in 6c: the planner doesn't use `memory_search_gin` together with the `user_id` filter). My inference is that the 10 no-match calls cost ~9.5 s each; I didn't time them separately.
+- No `SELECT COUNT(*)` appears any more: cursor pagination needs no count. The listing and `?since=` queries are ~1 ms each, so the composite index plus cursor pagination removed them from the top of the list.
+- `?page=5000` in `load.ps1` is ignored by `CursorPagination` and just returns the first page, so that request is now a copy of `/memories`.
+- Compared with the earlier "highest total_ms" table (taken from `bench.sql` EXPLAINs, ~620 ms each, not from API traffic), the list/date queries went from ~600 ms to ~1 ms. Only search is left worth optimizing, and mostly for the rare/no-match term (a per-user GIN via `btree_gin`, or a `(user_id, search_vector)` strategy, would be the next experiment).
