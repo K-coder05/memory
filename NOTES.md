@@ -121,3 +121,35 @@ What I take from it:
 - **The vector part is fast** (5 ms with the index) but the **keyword part isn't** (~130 ms): the GIN index covers all 5M rows and all users and the `user_id` filter is applied afterwards, the same problem as Q5b in 6c. The hybrid latency is mostly the keyword half.
 - **End to end** (p50, query embedding + database): pgvector vector ≈ 210 + 5 = ~215 ms; pgvector hybrid ≈ 210 + 86–190 = ~300–400 ms; Pinecone dense ≈ 205 + 93 = ~300 ms; Pinecone dense+BM25 ≈ 205 + 148 = ~350 ms. The embedding call is the biggest single cost on every path, and it's identical for all of them.
 - **Planner surprise:** for `rag_eval` (10,704 of 5M rows) Postgres estimates ~171 matching rows (it assumes the 1.2% of rows that have embeddings are spread evenly over users), so it picks the exact scan and ignores the HNSW index. Exact scan costs 50 ms warm and 141–805 ms cold. For a tenant this size the exact scan is acceptable, but it grows linearly with the tenant. Fixes: extended statistics on `(user_id, embedding IS NOT NULL)`, or a partial index `WHERE embedding IS NOT NULL` on the btree so the estimate is right. I haven't tried either.
+
+### 9i: tenant filtering with HNSW
+Setup: `rag_eval` owns 10,704 of the 60,704 indexed vectors (17.6%); HNSW forced (`--force-index`, otherwise the planner uses the exact scan and none of this happens); k = 5; hybrid with 10 candidates.
+
+**Eval questions (on-topic: nearest neighbours are mostly this tenant's own chunks):**
+
+| ef_search | iterative scan | vector hit@5 | vector avg returned | vector db p50 | hybrid hit@5 |
+|---|---|---|---|---|---|
+| 10 | off | 11/14 (79%) | **4.3** | 3.6 ms | 13/14 |
+| 10 | relaxed_order | 13/14 (93%) | 5.0 | 3.6 ms | 13/14 |
+| 40 | off | 12/14 (86%) | 4.6 | 3.9 ms | 13/14 |
+| 200 | off | 13/14 (93%) | 5.0 | 6.0 ms | 13/14 |
+
+**Off-topic queries** ("your invoice payment is overdue", "lunch with the client on Friday", ... asked as `rag_eval`, so the nearest vectors in the index belong to other tenants; 6 queries):
+
+| ef_search | iterative scan | avg results returned (k = 5) | db p50 |
+|---|---|---|---|
+| 10 | off | **0.0** | 3.7 ms |
+| 40 | off | **0.0** | 4.5 ms |
+| 100 | off | 0.8 | 6.5 ms |
+| 200 | off | 1.8 | 9.6 ms |
+| 10 | relaxed_order | 5.0 | 27.0 ms |
+| 40 | relaxed_order | 5.0 | 24.9 ms |
+
+What this shows:
+- HNSW finds the ~`ef_search` nearest vectors in the **whole index** first, then Postgres applies `user_id`. With 17.6% of the index and ef_search = 10, you expect ~2 survivors; for a query whose neighbours belong to other tenants you get **none, with no error**. The default `ef_search = 40` also returned 0 results on those queries, and even 200 only returned 1.8 of 5.
+- On-topic queries hide the problem (4.3 of 5 returned, hit rate 79–93%) because their neighbours are the tenant's own chunks. A tenant whose queries drift off its own data gets empty results. That's the dangerous failure: it depends on the query, so it won't show up in an eval set built from the tenant's own questions.
+- **Iterative scan (`relaxed_order`) fixed it**: 5.0 results every time, at any `ef_search`, because the scan keeps walking the graph until enough rows pass the filter. It cost latency only when needed: 3.7 ms → ~25 ms for the off-topic queries, nothing for the on-topic ones (3.6 ms both ways).
+- Raising `ef_search` also helps but is a blunt tool: results climb slowly (0.8, 1.8 of 5) while latency grows, and it has no guarantee.
+- Hybrid hides part of it: in the eval runs it always returned 5.0 results even when the vector list was short, because the keyword list filled the gap. I did not run hybrid on the off-topic queries. If the vector list is empty, the "semantic" half of the hybrid is silently missing.
+- Other fixes, which I did not try: a **partial HNSW index per tenant** (`WHERE user_id = X`; works for a few big tenants, not for 200 small ones); **partitioning** the table by tenant so each partition has its own index; an **exact scan for small tenants** (what the planner chose here by default: 50 ms for 10k rows, linear in tenant size). Pinecone's equivalent is namespaces or metadata filters.
+- The planner's default plan for this tenant is the exact scan, so the default behaviour of the code in `memories/search.py` never hit the problem on `rag_eval`. It would for a much bigger table or once statistics change, so `iterative_scan = relaxed_order` is the safe setting to ship with.
